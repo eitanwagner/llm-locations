@@ -11,12 +11,8 @@ import sys
 # from torch.cuda import graph
 
 import argparse
-parser = argparse.ArgumentParser()
-parser.add_argument("--model", type=str, default="gpt-4o")
-parser.add_argument("--evaluate", action="store_true")
-parser.add_argument("--set", type=str, default="test")
-parser.add_argument("--n", type=int, default=-1)
-args = parser.parse_args()
+from utils import parse_args
+args = parse_args()
 
 def exponential_backoff(client, messages, model='gpt-4-turbo-preview', max_retries=5, base_delay=1, id=0):
     retries = 0
@@ -191,15 +187,15 @@ def get_graphs_gpt4(i=43019, print_output=False, model="gpt-4o", save=True, revi
         print(messages)
 
     if save:
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/singles/graph_{i}_{model}.json", 'w') as file:
+        with open(args.base_path + f"testimonies/singles/graph_{i}_{model}.json", 'w') as file:
             json.dump(d, file)
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/singles/path_{i}_{model}.json", 'w') as file:
+        with open(args.base_path + f"testimonies/singles/path_{i}_{model}.json", 'w') as file:
             json.dump(d2, file)
         # update created_ids
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/created_ids{'_e' if args.evaluate else ''}_{model}.json", 'r') as file:
+        with open(args.base_path + f"created_ids{'_e' if args.evaluate else ''}_{model}.json", 'r') as file:
             created_ids = json.load(file)
         created_ids.append(i)
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/created_ids{'_e' if args.evaluate else ''}_{model}.json", 'w') as file:
+        with open(args.base_path + f"created_ids{'_e' if args.evaluate else ''}_{model}.json", 'w') as file:
             json.dump(created_ids, file)
     return d, d2
 
@@ -261,8 +257,8 @@ def make_numbered(i=43019, return_n=False):
     :param i:
     :return:
     """
-    data_path = "/cs/snapless/oabend/eitan.wagner/segmentation/data"
-    with open(data_path + '/sf_raw_text.json', 'r') as infile:
+    data_path = args.base_path + "data/"
+    with open(data_path + 'sf_raw_text.json', 'r') as infile:
         texts = json.load(infile)
 
     nlp = spacy.load("en_core_web_md")
@@ -281,11 +277,6 @@ def make_numbered(i=43019, return_n=False):
     if return_n:
         return n_sents
     return numbered
-
-    # make dataframe with numbered sentences
-    # df = pd.DataFrame({"text": n_sents})
-    # df.to_csv(data_path + "/numbered_testimonies.csv", index=False)
-
 
 # ***********************************
 
@@ -348,10 +339,6 @@ def plot_path(G, G_paths=None, i=""):
 
         types = list(nx.get_node_attributes(_G, "type").values())
         H = nx.convert_node_labels_to_integers(_G, label_attribute="node_label")
-        # H_layout = nx.nx_agraph.pygraphviz_layout(H, prog="sfdp", args='-Goverlap=scale -GK=1.')
-        # H_layout = nx.nx_agraph.pygraphviz_layout(H, prog="neato", args='-Goverlap=prism')
-        # H_layout = nx.nx_agraph.pygraphviz_layout(H, prog="neato", args='-Gmode=major')
-        # H_layout = nx.nx_agraph.pygraphviz_layout(H, prog="twopi", args='-Goverlap=prism -Goverlap_scaling=40')
         H_layout = nx.nx_agraph.pygraphviz_layout(H, prog="twopi", args='-Granksep=2 -Gnormalize=0 -Gstart=42')
         pos = {H.nodes[n]["node_label"]: p for n, p in H_layout.items()}
 
@@ -372,13 +359,6 @@ def plot_path(G, G_paths=None, i=""):
 
         nx.set_node_attributes(_G, color_list, "color")
         nx.set_node_attributes(_G, size_list, "size")
-        # nx.draw(G, pos, with_labels=True, node_size=1000, node_color="lightblue", font_size=10, font_weight="bold",
-        #         arrows=True)
-        # import graphistry
-        # graphistry.register(api=3, personal_key_id="20HTNWL4VM", personal_key_secret='1521DYXX69VZV4RE')
-        # graphistry.bind(source='src', destination='dst', node='nodeid').plot(G)
-        # nx.draw(_G, pos, node_size=size_list, node_color=color_list, font_size=4, font_weight="bold",
-        #         arrows=True, alpha=0.6, node_shape=shape_list, with_labels=False, edge_color="gray", width=0.5)
         for _i, (n, (x, y)) in enumerate(pos.items()):
             nx.draw_networkx_nodes(_G, pos, nodelist=[n], node_size=size_list[_i], node_color=color_list[_i], alpha=0.6, node_shape=shape_list[_i])
 
@@ -387,22 +367,8 @@ def plot_path(G, G_paths=None, i=""):
 
         nx.draw_networkx_edges(_G, pos, edge_color="gray", width=2, arrows=True, alpha=0.6)
 
-        # plt.title("Graph Representation of Locations from Holocaust Testimonies")
-        # plt.show()
-        # Define a path as a list of edges
-        # path_edges = [
-        #     ("Village: Forth", "City: Nuremberg"),
-        #     ("City: Nuremberg", "Camp: Dachau Concentration Camp"),
-        #     ("Camp: Dachau Concentration Camp", "Camp: Camp Ritchie"),
-        #     ("Camp: Camp Ritchie", "Place: Mount Sinai Hospital")
-        # ]
-        # if False:
         if G_path is not None:
             print(i, "path:", G_path.edges)
-            # path_edges = [
-            #     ("Vienna", "Kiev"),
-            #     ("Kiev", "Toronto"),
-            # ]
             nx.set_edge_attributes(_G, range(1, len(_G.edges)+1), "n")
             path_edges = G_path.edges
 
@@ -421,15 +387,13 @@ def plot_path(G, G_paths=None, i=""):
             # Draw the edges with the specified colors or sizes
             for _i, (edge, size) in enumerate(zip(path_edges, sizes)):
                 nx.draw_networkx_edges(_G, pos, edgelist=[edge], edge_color=cmap(norm(_i)), width=size, arrows=True, arrowsize=150)
-            # nx.draw_networkx_edges(_G, pos, edgelist=path_edges, edge_color="r", width=8, arrows=True, arrowsize=200, alpha=0.9, node_shape="^")
 
             e_labels = {e: i+1 for i, e in enumerate(path_edges)}
             nx.draw_networkx_edge_labels(_G, pos, edge_labels=e_labels)
             # Draw the path nodes in red
             nx.draw_networkx_nodes(_G, pos, nodelist=path_nodes, node_color="r", node_size=700, alpha=0.9)
 
-        # plt.title("Graph Representation of Locations from Holocaust Testimonies")
-        plt.savefig(f"/cs/labs/oabend/eitan.wagner/events/testimonies/plot{'_e' if args.evaluate else ''}{args.model}-{i}.png", dpi=150)
+        plt.savefig(args.base_path + f"testimonies/plot{'_e' if args.evaluate else ''}{args.model}-{i}.png", dpi=150)
     # plt.show()
     print("Done")
 
@@ -437,13 +401,13 @@ def plot_path(G, G_paths=None, i=""):
 # ***********************************
 # for evaluation
 
-def get_gold_xlsx(data_path="/cs/snapless/oabend/eitan.wagner/segmentation/data/gold_loc_xlsx/"):
+def get_gold_xlsx():
     """
     :param data_path:
     :return:
     """
     import pandas as pd
-    sheets = pd.read_excel(data_path + "test_set-derived_from_testimonies1_full - 13.4.xlsx", sheet_name=None, usecols="B:D")
+    sheets = pd.read_excel(args.base_path + "data/gold_loc_xlsx/test_set-derived_from_testimonies1_full - 13.4.xlsx", sheet_name=None, usecols="B:D")
     d = {}
 
     for t, df in sheets.items():
@@ -543,10 +507,10 @@ def evaluate(path_d, gold_path, d, i):
 
     # save evaluation
     e = {}
-    with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/eval_{args.model}.json", 'r') as file:
+    with open(args.base_path + f"testimonies/eval_{args.model}.json", 'r') as file:
         e = json.load(file)
     e[i] = eval
-    with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/eval_{args.model}.json", 'w') as file:
+    with open(args.base_path + f"testimonies/eval_{args.model}.json", 'w') as file:
         json.dump(e, file)
 
     print(eval)
@@ -560,7 +524,7 @@ def evaluate_models():
 
     es = {}
     for model in ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]:
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/eval_{model}.json", 'r') as file:
+        with open(args.base_path + f"testimonies/eval_{model}.json", 'r') as file:
             e = json.load(file)
         es[model] = e
         es[model]["total"] = [0, 0]
@@ -599,23 +563,23 @@ def evaluate_models():
 # ***********************************
 
 def combine_singles(model="gpt-4o"):
-    with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/created_ids{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
+    with open(args.base_path + f"created_ids{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
         created_ids = json.load(file)
 
     d = {}
     for i in created_ids:
         d[i] = {}
         # load graph
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/singles/graph_{i}_{model}.json", "r") as file:
+        with open(args.base_path + f"testimonies/singles/graph_{i}_{model}.json", "r") as file:
             d[i]["graph"] = json.load(file)
             # if "Danube" in d[i]["graph"]:
             #     print("here")
 
         # load path
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/singles/path_{i}_{model}.json", "r") as file:
+        with open(args.base_path + f"testimonies/singles/path_{i}_{model}.json", "r") as file:
             d[i]["path"] = json.load(file)
 
-    with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/graphs{'_e' if args.evaluate else ''}_{model}.json", "w") as file:
+    with open(args.base_path + f"testimonies/graphs{'_e' if args.evaluate else ''}_{model}.json", "w") as file:
         json.dump(d, file)
     return d
 
@@ -624,11 +588,11 @@ def get_graphs(testimony_ids, model="gpt-4o", load=True):
     :param testimony_ids:
     """
     if load:
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/graphs{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
+        with open(args.base_path + f"testimonies/graphs{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
             d = json.load(file)
         return d
 
-    with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/created_ids{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
+    with open(args.base_path + f"testimonies/created_ids{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
         created_ids = json.load(file)
 
     test_d = get_gold_xlsx()
@@ -666,7 +630,7 @@ def get_conversion_d(d, load=False, model="gpt-4o", save=True):
     :return:
     """
     if load:
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/duplicates{'_e' if args.evaluate else ''}_{args.model}.json", "r") as file:
+        with open(args.base_path + f"testimonies/duplicates{'_e' if args.evaluate else ''}_{args.model}.json", "r") as file:
             conversion_d = json.load(file)
         return conversion_d
 
@@ -683,7 +647,7 @@ def get_conversion_d(d, load=False, model="gpt-4o", save=True):
                 conversion_d[_l] = l[0]
 
     if save:
-        with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/duplicates{'_e' if args.evaluate else ''}_{model}.json", "w") as file:
+        with open(args.base_path + f"testimonies/duplicates{'_e' if args.evaluate else ''}_{model}.json", "w") as file:
             json.dump(conversion_d, file)
     return conversion_d
 
@@ -736,10 +700,10 @@ def get_joint_graph(d, conversion_d):
     G.add_edges_from(all_edges)
 
     # save graph to file
-    with open(f"/cs/labs/oabend/eitan.wagner/events/testimonies/nodes{'_e' if args.evaluate else ''}{args.model}.json", 'w') as file:
+    with open(args.base_path + f"testimonies/nodes{'_e' if args.evaluate else ''}{args.model}.json", 'w') as file:
         json.dump(all_nodes, file)
-    nx.write_adjlist(G, f"/cs/labs/oabend/eitan.wagner/events/testimonies/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
-    G = nx.read_adjlist(f"/cs/labs/oabend/eitan.wagner/events/testimonies/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
+    nx.write_adjlist(G, args.base_path + f"testimonies/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
+    G = nx.read_adjlist(args.base_path + f"testimonies/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
     # add node_types to G
     nx.set_node_attributes(G, {n[0]: n[1]["type"] for n in all_nodes}, "type")
 
@@ -827,8 +791,8 @@ def main():
 
     # evaluate_models()
 
-    data_path = "/cs/snapless/oabend/eitan.wagner/segmentation/data"
-    with open(data_path + '/sf_raw_text.json', 'r') as infile:
+    data_path = args.base_path + "data/"
+    with open(data_path + 'sf_raw_text.json', 'r') as infile:
         testimony_ids = list(json.load(infile).keys())
 
     if args.evaluate or args.n >= 0:
