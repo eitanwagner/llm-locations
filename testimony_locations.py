@@ -13,6 +13,7 @@ import sys
 import argparse
 from utils import parse_args
 args = parse_args()
+OUTPUT_TYPE = "testimonies" if not args.lake_district else "lds"
 
 def exponential_backoff(client, messages, model='gpt-4-turbo-preview', max_retries=5, base_delay=1, id=0):
     retries = 0
@@ -187,9 +188,9 @@ def get_graphs_gpt4(i=43019, print_output=False, model="gpt-4o", save=True, revi
         print(messages)
 
     if save:
-        with open(args.base_path + f"testimonies/singles/graph_{i}_{model}.json", 'w') as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/singles/graph_{i}_{model}.json", 'w') as file:
             json.dump(d, file)
-        with open(args.base_path + f"testimonies/singles/path_{i}_{model}.json", 'w') as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/singles/path_{i}_{model}.json", 'w') as file:
             json.dump(d2, file)
         # update created_ids
         with open(args.base_path + f"created_ids{'_e' if args.evaluate else ''}_{model}.json", 'r') as file:
@@ -249,7 +250,191 @@ def get_doubles_gpt4(locations, print_output=False, i=43019, model="gpt-4o"):
     return l
 
 
+def get_ld_graphs_gpt4(i="", print_output=False, model="gpt-4o-mini", save=True, revise=True):
+    """
+
+    :param i:
+    :param print_output:
+    :param model:
+    :param save:
+    :param revise:
+    :return:
+    """
+    # from openai import OpenAI
+    from openai_client import get_client
+    # Set up OpenAI API credentials
+    client = get_client()
+    text = get_travel(i)
+
+    # Define the model and parameters
+    prompt = """
+    I'll give you a travel description in the Lake District. 
+    I want you to give me a JSON representing the graph of the mentioned locations (proper and common) and any known relations between them. Locations can be GPEs (like country or city) or important buildings or natural locations.  
+    Some important points:
+    1. Make sure the nodes contain locations only and not anything else (no nodes for events or people). 
+    2. Give the nodes a type based on the type of location. The types should include: Country, City, Facility and Natural. 
+    3. Keep the graph as full as possible, so, for example, if a place in a city in country is mentioned, there should be nodes for the place, the city, and the country.
+    4. The graph should include relations between locations (i.e., A is in B).  Make sure that the direction of an edge is that of inclusion if relevant (that is, if A is in B then the edge should be from A to B).
+    5. Make sure to avoid double entries.
+    6. Give me the graph as JSON dictionary, with a the "nodes" field indicating a list of nodes  and "edges" indicating a list of edges. These nodes and edges should be in a format that can be create a python networkx graph. Make sure the nodes are given as a list of tuples, in which the first value is the name and the second is a dictionary with the type (as described above) The edges should be in a list of tuples, each containing two names (see example).
+    
+    Here is an example:
+    ```json
+    {
+    "nodes": [
+        ["lake", {"type": "Natural"}],
+        ["Keswick", {"type": "City"}]
+    ], 
+    "edges": [
+        ["lake", "Keswick"]
+    ]
+    }
+    ```
+    
+    This should all be based on the text. 
+    
+    Description:
+    """
+
+    m3a = """
+    Go over your answer and make sure that it is consistent. Check the types of the nodes and the direction of the edges. Make sure that the nodes are locations only and that there are no double entries.
+    Give your (possibly) corrected answer in the same JSON format.
+    """
+    m3b = """
+    Go over your answer and make sure that it is consistent. 
+    Make sure that: (1) the sentence numbers are in ascending order; (2) a node does not repeat without other nodes between; 
+    (3) there are edges between adjacent nodes; (4) a long description of a location is not repeated as a separate node (e.g., "Brooklyn, New York" should be one node and not two).
+    
+    Give your (possibly) corrected answer in the same JSON format.
+    """
+
+    messages = [{"role": "system", "content": "You are a helpful assistant."}]
+    messages.append({"role": "user", "content": prompt + text})
+    completion = exponential_backoff(client, messages, id=i, model=model)
+    if revise:
+        messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+        messages.append({"role": "user", "content": m3a})
+        completion = exponential_backoff(client, messages, id=i, model=model)
+
+    try:
+        d = json.loads(completion.choices[0].message.content)
+    except Exception as e:
+        print(f"JSON parsing failed: {str(e)}")
+        return {"nodes": [], "edges": []}, {"nodes": [], "edges": []}
+
+    # get path
+    m2 = """
+    Now, can you give a graph with a trajectory of the travel? That is, give a list of location where the traveler will be. 
+    All location nodes should be nodes from the networkx graph you gave before. 
+    The edges should be between each adjacent node by order of the testimony.
+    Give me a graph in JSON format (like in the example).
+    
+    For example:
+    ```json
+    {
+    "nodes": [
+        ["Hagley"],
+        ["Dovedale"]
+    ], 
+    "edges": [
+        ["Hagley", "Dovedale"]
+    ]
+    }
+    ```
+    """
+    messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+    messages.append({"role": "user", "content": m2})
+    completion = exponential_backoff(client, messages, id=i, model=model)
+
+    if revise:
+        messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+        messages.append({"role": "user", "content": m3b})
+        completion = exponential_backoff(client, messages, id=i, model=model)
+
+    try:
+        d2 = json.loads(completion.choices[0].message.content)
+    except Exception as e:
+        print(f"JSON parsing failed: {str(e)}")
+        return d, {"nodes": [], "edges": []}
+    # d2 = json.loads(completion.choices[0].message.content)
+    messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+    if print_output:
+        print(messages)
+
+    if save:
+        with open(args.base_path + f"{OUTPUT_TYPE}/singles/graph_{i}_{model}.json", 'w') as file:
+            json.dump(d, file)
+        with open(args.base_path + f"{OUTPUT_TYPE}/singles/path_{i}_{model}.json", 'w') as file:
+            json.dump(d2, file)
+        # update created_ids
+        with open(args.base_path + f"lds/created_ids{'_e' if args.evaluate else ''}_{model}.json", 'r') as file:
+            created_ids = json.load(file)
+        created_ids.append(i)
+        with open(args.base_path + f"lds/created_ids{'_e' if args.evaluate else ''}_{model}.json", 'w') as file:
+            json.dump(created_ids, file)
+    return d, d2
+
+
+def get_doubles_gpt4(locations, print_output=False, i=43019, model="gpt-4o"):
+    """
+
+    :param locations:
+    :param print_output:
+    :param i:
+    :param model:
+    :return:
+    """
+    from openai_client import get_client
+    client = get_client()
+
+    prompt = """
+    I'll give you (in JSON format) a list of place names. I want you to see if there are any places that appear twice but with different names. 
+    Give me a JSON with a list of lists, where the inner list is the multiple names that describe the same place (and both appear in the input). No need to return unique names (i.e., lists with one element). 
+    Convert names only if you are positive that they are the same, e.g., different spellings or a longer description of the same place (like US, USA, America etc.). 
+    Make sure to maintain the exact spelling that appeared, including special characters.
+    Make sure to give only the JSON format with no additional text.
+    
+    For example, if the input is:
+    ```json
+    ["United States of America", "USA", "Lodz", "Lódz"]
+    ```
+    Then the output should be:
+    ```json
+    [["United States of America", "USA"], ["Lodz", "Lódz"]]
+    ```
+    
+    Here is the input:
+    """
+    messages = [{"role": "system", "content": "You are a helpful assistant."}]
+    input = f"""
+    ```json
+    {json.dumps(locations)}
+    ```
+    """
+    messages.append({"role": "user", "content": prompt + input})
+    completion = exponential_backoff(client, messages, id=i, model=model)
+    try:
+        l = json.loads(completion.choices[0].message.content)
+    except Exception as e:
+        print(f"JSON parsing failed: {str(e)}")
+        return {"nodes": [], "edges": []}, {"nodes": [], "edges": []}
+
+    if print_output:
+        print(messages)
+    return l
+
+
 # ***********************************
+
+def get_travel(i):
+    """
+    Get the travel path of the witness
+    :param i:
+    :return:
+    """
+    with open(args.base_path + f"data/lake_district.json", 'r') as file:
+        d = json.load(file)
+    return d[str(i)]
 
 def make_numbered(i=43019, return_n=False):
     """
@@ -393,7 +578,7 @@ def plot_path(G, G_paths=None, i=""):
             # Draw the path nodes in red
             nx.draw_networkx_nodes(_G, pos, nodelist=path_nodes, node_color="r", node_size=700, alpha=0.9)
 
-        plt.savefig(args.base_path + f"testimonies/plot{'_e' if args.evaluate else ''}{args.model}-{i}.png", dpi=150)
+        plt.savefig(args.base_path + f"{OUTPUT_TYPE}/plot{'_e' if args.evaluate else ''}{args.model}-{i}.png", dpi=150)
     # plt.show()
     print("Done")
 
@@ -562,7 +747,7 @@ def evaluate_models():
 
 # ***********************************
 
-def combine_singles(model="gpt-4o"):
+def combine_singles(model="gpt-4o-mini"):
     with open(args.base_path + f"created_ids{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
         created_ids = json.load(file)
 
@@ -570,36 +755,39 @@ def combine_singles(model="gpt-4o"):
     for i in created_ids:
         d[i] = {}
         # load graph
-        with open(args.base_path + f"testimonies/singles/graph_{i}_{model}.json", "r") as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/singles/graph_{i}_{model}.json", "r") as file:
             d[i]["graph"] = json.load(file)
             # if "Danube" in d[i]["graph"]:
             #     print("here")
 
         # load path
-        with open(args.base_path + f"testimonies/singles/path_{i}_{model}.json", "r") as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/singles/path_{i}_{model}.json", "r") as file:
             d[i]["path"] = json.load(file)
 
-    with open(args.base_path + f"testimonies/graphs{'_e' if args.evaluate else ''}_{model}.json", "w") as file:
+    with open(args.base_path + f"{OUTPUT_TYPE}/graphs{'_e' if args.evaluate else ''}_{model}.json", "w") as file:
         json.dump(d, file)
     return d
 
-def get_graphs(testimony_ids, model="gpt-4o", load=True):
+def get_graphs(testimony_ids, model="gpt-4o-mini", load=True):
     """
     :param testimony_ids:
     """
     if load:
-        with open(args.base_path + f"testimonies/graphs{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/graphs{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
             d = json.load(file)
         return d
 
-    with open(args.base_path + f"testimonies/created_ids{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
+    with open(args.base_path + f"{OUTPUT_TYPE}/created_ids{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
         created_ids = json.load(file)
 
-    test_d = get_gold_xlsx()
-    test_ids = list(test_d.keys())
+    test_ids = []
+    ignore = created_ids
+    if not args.lake_district:
+        test_d = get_gold_xlsx()
+        test_ids = list(test_d.keys())
+        ignore = ['45064', '29550'] + ignore
     nontest_ids = [t for t in testimony_ids if t not in test_ids]
 
-    ignore = ['45064', '29550'] + created_ids
     d = {}
     s = slice(0, args.n if args.n >= 0 else 10)
     print("Slice:")
@@ -612,7 +800,10 @@ def get_graphs(testimony_ids, model="gpt-4o", load=True):
     # ids = ['31487']
     for i in ids:
         print(i)
-        graph_d, path_d = get_graphs_gpt4(i=i, print_output=True, model=model)
+        if args.lake_district:
+            graph_d, path_d = get_ld_graphs_gpt4(i=i, print_output=True, model=model)
+        else:
+            graph_d, path_d = get_graphs_gpt4(i=i, print_output=True, model=model)
         d[i] = {"graph": graph_d, "path": path_d}
 
     print("Ids:")
@@ -630,7 +821,7 @@ def get_conversion_d(d, load=False, model="gpt-4o", save=True):
     :return:
     """
     if load:
-        with open(args.base_path + f"testimonies/duplicates{'_e' if args.evaluate else ''}_{args.model}.json", "r") as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/duplicates{'_e' if args.evaluate else ''}_{args.model}.json", "r") as file:
             conversion_d = json.load(file)
         return conversion_d
 
@@ -647,7 +838,7 @@ def get_conversion_d(d, load=False, model="gpt-4o", save=True):
                 conversion_d[_l] = l[0]
 
     if save:
-        with open(args.base_path + f"testimonies/duplicates{'_e' if args.evaluate else ''}_{model}.json", "w") as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/duplicates{'_e' if args.evaluate else ''}_{model}.json", "w") as file:
             json.dump(conversion_d, file)
     return conversion_d
 
@@ -700,10 +891,10 @@ def get_joint_graph(d, conversion_d):
     G.add_edges_from(all_edges)
 
     # save graph to file
-    with open(args.base_path + f"testimonies/nodes{'_e' if args.evaluate else ''}{args.model}.json", 'w') as file:
+    with open(args.base_path + f"{OUTPUT_TYPE}/nodes{'_e' if args.evaluate else ''}{args.model}.json", 'w') as file:
         json.dump(all_nodes, file)
-    nx.write_adjlist(G, args.base_path + f"testimonies/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
-    G = nx.read_adjlist(args.base_path + f"testimonies/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
+    nx.write_adjlist(G, args.base_path + f"{OUTPUT_TYPE}/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
+    G = nx.read_adjlist(args.base_path + f"{OUTPUT_TYPE}/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
     # add node_types to G
     nx.set_node_attributes(G, {n[0]: n[1]["type"] for n in all_nodes}, "type")
 
@@ -792,7 +983,8 @@ def main():
     # evaluate_models()
 
     data_path = args.base_path + "data/"
-    with open(data_path + 'sf_raw_text.json', 'r') as infile:
+    name = "sf_raw_text.json" if not args.lake_district else "lake_district.json"
+    with open(data_path + name, 'r') as infile:
         testimony_ids = list(json.load(infile).keys())
 
     if args.evaluate or args.n >= 0:
