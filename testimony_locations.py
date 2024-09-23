@@ -583,6 +583,117 @@ def plot_path(G, G_paths=None, i=""):
     print("Done")
 
 
+def plot_ld_path(G, G_paths=None, i=""):
+    """
+    Plot the graph and a path on it
+    :param G:
+    :param G_path:
+    :param i:
+    :return:
+    """
+    import matplotlib.pyplot as plt
+    # from matplotlib.colors import Colormap
+
+    if G_paths is None:
+    # if True:
+        G_paths = {i: None}
+        path_nodes = []
+    else:
+        path_nodes = [n for Gp in G_paths.values() for n in Gp.nodes]
+
+    for G_path in [G_paths[i]]:
+        plt.figure(figsize=(16, 16))
+        # pos = nx.spring_layout(G, k=0.1, seed=42)
+
+        # pos = nx.nx_pydot.graphviz_layout(G, prog="twopi")
+        types = list(nx.get_node_attributes(G, "type").values())
+        size2type = {300: ["Country"],
+                     200: ['County'],
+                     100: ['City'],
+                     30: ["Facility"],
+                     30: ['Lake', 'River', "Natural"]
+                     }
+        node_labels = list(G.nodes)
+        type2size = {t: s for s, ts in size2type.items() for t in ts}
+        type2color = {t: "green" if t in ['Lake', 'River', "Natural"] else "brown" if t in ["Country"] else "orange" if t in ["Facility"] else "blue" for t in types}
+
+        random.seed(42)
+        _G = G.copy()
+        _G.remove_nodes_from([n for n, t in zip(_G.nodes, types) if t in size2type[300] and n not in path_nodes])
+
+        # # remove 60 percent the nodes of size 50 and 15
+        # # set numpy random seed
+        # np.random.seed(42)
+        # r = np.random.rand(len(_G.nodes))
+        # _G.remove_nodes_from([n for _i, (n, t) in enumerate(zip(_G.nodes, types)) if t in size2type[50] + size2type[15] and r[_i] < 0.6 and n not in path_nodes])
+        #
+        # remove all isolated nodes
+        _G.remove_nodes_from([n for n in nx.isolates(_G) if n not in path_nodes])
+
+        types = list(nx.get_node_attributes(_G, "type").values())
+        H = nx.convert_node_labels_to_integers(_G, label_attribute="node_label")
+        # H_layout = nx.nx_agraph.pygraphviz_layout(H, prog="twopi", args='-Granksep=2 -Gnormalize=0 -Gstart=42')
+        H_layout = nx.nx_pydot.graphviz_layout(H, prog="twopi")
+        pos = {H.nodes[n]["node_label"]: p for n, p in H_layout.items()}
+
+        shape_list = ["o" if t in ["Country", "County"] else "s" if t in ['City'] else "^" if t in ['Lake', 'River', "Natural"] else "d" for t in types]
+
+        # size_list = [type2size.get(t, 5) * 15 for t in types]
+        size_list = [type2size.get(t, 5) * 10 for t in types]
+        # # make nodes with a small outdegree smaller
+        # size_list = [size_list[i] * 0.4 if len(list(_G.neighbors(n))) < 10 and shape_list[i] == 'o' else size_list[i] * 2.5 if len(list(_G.neighbors(n))) > 100 and shape_list[i] == 'o' else size_list[i] for i, n in enumerate(_G.nodes)]
+
+        fontsize_list = [type2size.get(t, 5) // 70 + 4 for t in types]
+        # # adjust size but degree
+        # fontsize_list = [fontsize_list[i] - 4 if len(list(_G.neighbors(n))) < 10 and shape_list[i] == 'o' else fontsize_list[i] + 4 if len(list(_G.neighbors(n))) > 100 and shape_list[i] == 'o' else fontsize_list[i] for i, n in enumerate(_G.nodes)]
+
+        # fontsize_list = [type2size.get(t, 5) // 5 + 5 for t in types]
+        color_list = [type2color.get(t, "blue") for t in types]
+        # make a list of shapes. we want a circle for countries and continents and squares for the rest besided holocaust types which are triangles
+
+        nx.set_node_attributes(_G, color_list, "color")
+        nx.set_node_attributes(_G, size_list, "size")
+        for _i, (n, (x, y)) in enumerate(pos.items()):
+            # print(n, shape_list[_i])
+            nx.draw_networkx_nodes(_G, pos, nodelist=[n], node_size=size_list[_i], node_color=color_list[_i], alpha=0.6, node_shape=shape_list[_i])
+
+            # for _i, (node, (x, y)) in enumerate(pos.items()):
+            plt.text(x, y, n, fontsize=fontsize_list[_i], ha='center', va='center')
+
+        nx.draw_networkx_edges(_G, pos, edge_color="gray", width=2, arrows=True, alpha=0.6)
+
+        if G_path is not None:
+            print(i, "path:", G_path.edges)
+            nx.set_edge_attributes(_G, range(1, len(_G.edges)+1), "n")
+            path_edges = G_path.edges
+
+            # Highlight the path
+            # Extract nodes from the path_edges
+            path_nodes = set([node for edge in path_edges for node in edge])
+            print(path_nodes)
+            # Draw the path edges in red
+            # Create a colormap of reds
+            cmap = plt.cm.get_cmap('Reds')
+            # Normalize the colors based on the number of nodes
+            import matplotlib.colors as mcolors
+            norm = mcolors.Normalize(vmin=0, vmax=len(G_path.nodes))
+
+            sizes = np.full(len(G_path.edges), 8)
+                     # + np.arange(len(G_path.edges)))
+            # Draw the edges with the specified colors or sizes
+            for _i, (edge, size) in enumerate(zip(path_edges, sizes)):
+                nx.draw_networkx_edges(_G, pos, edgelist=[edge], edge_color=cmap(norm(_i)), width=size, arrows=True, arrowsize=100)
+
+            e_labels = {e: i+1 for i, e in enumerate(path_edges)}
+            nx.draw_networkx_edge_labels(_G, pos, edge_labels=e_labels)
+            # Draw the path nodes in red
+            nx.draw_networkx_nodes(_G, pos, nodelist=path_nodes, node_color="r", node_size=300, alpha=0.8)
+
+        plt.savefig(args.base_path + f"{OUTPUT_TYPE}/plot{'_e' if args.evaluate else ''}{args.model}-{i}.png", dpi=150)
+    # plt.show()
+    print("Done")
+
+
 # ***********************************
 # for evaluation
 
@@ -914,7 +1025,7 @@ def plot_paths(d, G, testimony_ids, conversion_d):
     """
     G_paths = {}
     ids = []
-    for id in testimony_ids[:20]:
+    for id in testimony_ids[:5]:
         # if id == "32783":
         #     continue
         if id in d:
@@ -935,7 +1046,10 @@ def plot_paths(d, G, testimony_ids, conversion_d):
             ids.append(id)
 
     for id in ids:
-        plot_path(G, G_paths=G_paths, i=id)
+        if args.lake_district:
+            plot_ld_path(G, G_paths=G_paths, i=id)
+        else:
+            plot_path(G, G_paths=G_paths, i=id)
 
 
 # **********************************
@@ -1017,8 +1131,8 @@ def main():
         m_pairs = {k: v for k, v in p.items() if len(v) > 8}
         m_triples = {k: v for k, v in t.items() if len(v) > 1}
 
-    conversion_d = get_conversion_d(d, load=False, model=model, save=True)
-    # conversion_d = get_conversion_d(d, load=True, model=model)
+    # conversion_d = get_conversion_d(d, load=False, model=model, save=True)
+    conversion_d = get_conversion_d(d, load=True, model=model)
     print("\nConversion dict")
     print(conversion_d)
 
