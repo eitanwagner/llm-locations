@@ -748,7 +748,8 @@ def evaluate_models():
 # ***********************************
 
 def combine_singles(model="gpt-4o-mini"):
-    with open(args.base_path + f"created_ids{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
+    t = "lds" if args.lake_district else "testimonies"
+    with open(args.base_path + f"{t}/created_ids{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
         created_ids = json.load(file)
 
     d = {}
@@ -786,6 +787,8 @@ def get_graphs(testimony_ids, model="gpt-4o-mini", load=True):
         test_d = get_gold_xlsx()
         test_ids = list(test_d.keys())
         ignore = ['45064', '29550'] + ignore
+    else:
+        ignore = ignore + ["baines1829_a"]
     nontest_ids = [t for t in testimony_ids if t not in test_ids]
 
     d = {}
@@ -1005,15 +1008,17 @@ def main():
         return
 
     d = get_graphs(testimony_ids, model=model, load=True)
-    t = find_triples(d)
-    p = find_pairs(d)
 
-    # take pairs and triples that appear more than once
-    m_pairs = {k: v for k, v in p.items() if len(v) > 8}
-    m_triples = {k: v for k, v in t.items() if len(v) > 1}
+    if not args.lake_district:
+        t = find_triples(d)
+        p = find_pairs(d)
 
-    # conversion_d = get_conversion_d(d, load=False, model=model, save=True)
-    conversion_d = get_conversion_d(d, load=True, model=model)
+        # take pairs and triples that appear more than once
+        m_pairs = {k: v for k, v in p.items() if len(v) > 8}
+        m_triples = {k: v for k, v in t.items() if len(v) > 1}
+
+    conversion_d = get_conversion_d(d, load=False, model=model, save=True)
+    # conversion_d = get_conversion_d(d, load=True, model=model)
     print("\nConversion dict")
     print(conversion_d)
 
