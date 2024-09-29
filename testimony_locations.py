@@ -693,170 +693,7 @@ def plot_ld_path(G, G_paths=None, i=""):
     # plt.show()
     print("Done")
 
-
-# ***********************************
-# for evaluation
-
-def get_gold_xlsx():
-    """
-    :param data_path:
-    :return:
-    """
-    import pandas as pd
-    sheets = pd.read_excel(args.base_path + "data/gold_loc_xlsx/test_set-derived_from_testimonies1_full - 13.4.xlsx", sheet_name=None, usecols="B:D")
-    d = {}
-
-    for t, df in sheets.items():
-        df.dropna(inplace=True)
-        locs = df['location'].str.rstrip().to_list()
-        d[t] = [df['text'].to_list(), locs]
-    return d
-
-def modified_edit_distance(s1, s2, modified=True):
-    m = len(s1)
-    n = len(s2)
-    dp = [[0 for _ in range(n+1)] for _ in range(m+1)]
-
-    # Initialize the DP table
-    for i in range(m+1):
-        dp[i][0] = i if not modified else 0
-    for j in range(n+1):
-        dp[0][j] = j
-
-    # Fill the DP table
-    for i in range(1, m+1):
-        for j in range(1, n+1):
-            if s1[i-1] == s2[j-1]:
-                dp[i][j] = dp[i-1][j-1]
-            else:
-                if modified:
-                    # No penalty for deletion from s1
-                    dp[i][j] = min(dp[i-1][j], 1 + dp[i][j-1], 1 + dp[i-1][j-1])
-                else:
-                    dp[i][j] = min(1 + dp[i-1][j], 1 + dp[i][j-1], 1 + dp[i-1][j-1])
-
-    return dp[m][n]
-
-
-def align_locations(path, gold_path, model="gpt-4o"):
-    """
-
-    :param path:
-    :param gold_path:
-    :return:
-    """
-    from openai_client import get_client
-    client = get_client()
-
-    m1 = """
-    I have a list of predicted locations and a list of locations from the gold standard.
-    For each location in the predicted list, I want you to find a corresponding location in the gold standard list if it exists (even if it's written differently). 
-    In the case it exists, give me the id of the corresponding location in the gold standard list. If it doesn't exist, give me -1.
-    
-    Here is an example:
-    For predicted locations: ["Warsaw (Ghetto)", "Luck", "Warsaw", "New York"],
-    and gold-standard locations: ["Lutsk", "The Warsaw ghetto"]]
-    
-    The output should be the JSON: 
-    {"ids": [1, 0, -1, -1]}
-    
-    Make sure to follow the instructions and give the output in the correct format.
-    
-    """
-
-    m1a = f"""
-    Predicted locations: {path},
-    Gold-standard locations: {gold_path}
-    """
-
-    messages = [{"role": "system", "content": "You are a helpful assistant."}]
-    messages.append({"role": "user", "content": m1 + m1a})
-    completion = exponential_backoff(client, messages, model=model)
-    try:
-        d = json.loads(completion.choices[0].message.content)
-    except Exception as e:
-        print(f"JSON parsing failed: {str(e)}")
-        return {"ids": []}
-    return d["ids"]
-
-def evaluate_gold(path, gold_path, d):
-    """
-    Compare the path to the gold path
-    :param path:
-    :param gold_path:
-    :return:
-    """
-    # get types of locations
-    loc_to_type = {n[0]: n[1]["type"] for _d in d.values() for n in _d["graph"]["nodes"]}
-
-    # add type to each location in the path
-    _path = [p + ", " + loc_to_type.get(p, "") for p in path]
-    _path = align_locations(_path, gold_path)
-
-    # use the modified edit distance to compare the paths
-    return modified_edit_distance([i for i, p in enumerate(gold_path)], _path), modified_edit_distance([i for i, p in enumerate(gold_path)], _path, modified=False)
-
-
-def evaluate(path_d, gold_path, d, i):
-    print("Evaluation:")
-    eval = evaluate_gold([p[0] for p in path_d["nodes"]], gold_path, d)
-
-    # save evaluation
-    e = {}
-    with open(args.base_path + f"testimonies/eval_{args.model}.json", 'r') as file:
-        e = json.load(file)
-    e[i] = eval
-    with open(args.base_path + f"testimonies/eval_{args.model}.json", 'w') as file:
-        json.dump(e, file)
-
-    print(eval)
-
-def evaluate_models():
-    """
-    Evaluate the models
-    :return:
-    """
-    gold_d = get_gold_xlsx()
-
-    es = {}
-    for model in ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]:
-        with open(args.base_path + f"testimonies/eval_{model}.json", 'r') as file:
-            e = json.load(file)
-        es[model] = e
-        es[model]["total"] = [0, 0]
-
-    # use only the ids that are in all models
-    ids = list(es["gpt-4o"].keys())
-    es["gpt-4o-mini"] = {k: v for k, v in es["gpt-4o-mini"].items() if k in ids}
-    es["max"] = {"total": [0, 0]}
-    es["random"] = {"total": [0, 0]}
-
-    for i in ids[:-1]:
-        print(i)
-        gold_path = gold_d[i][1]
-        gold_path = [gold_path[i] for i in range(1, len(gold_path) - 1) if
-                     gold_path[i] != gold_path[i - 1]]  # and remove start and end
-
-        for model in ["gpt-4o", "gpt-4-turbo", "gpt-4o-mini"]:
-            es[model][i] = [es[model][i][0] / len(gold_path), es[model][i][1] / len(gold_path)]
-            es[model]["total"] = [es[model]["total"][0] + es[model][i][0] / len(ids), es[model]["total"][1] + es[model][i][1]/len(ids)]
-
-        # convert gold path to indices
-        locs = list(set(gold_path))
-        _gold_path = [locs.index(l) for l in gold_path]
-        # find most common index in gold_path
-        _max_path = [max(set(_gold_path), key=_gold_path.count) for _ in _gold_path]
-        _rand_path = np.random.randint(0, 2533, len(_gold_path))
-
-        es["max"][i] = [modified_edit_distance(_max_path, _gold_path) / len(gold_path), modified_edit_distance(_max_path, _gold_path, modified=False) / len(gold_path)]
-        es["max"]["total"] = [es["max"]["total"][0] + es["max"][i][0] / len(ids), es["max"]["total"][1] + es["max"][i][1] / len(ids)]
-
-        es["random"][i] = [modified_edit_distance(_rand_path, _gold_path) / len(gold_path), modified_edit_distance(_rand_path, _gold_path, modified=False) / len(gold_path)]
-        es["random"]["total"] = [es["random"]["total"][0] + es["random"][i][0] / len(ids), es["random"]["total"][1] + es["random"][i][1] / len(ids)]
-
-    print(es)
-
-# ***********************************
+# *****************
 
 def combine_singles(model="gpt-4o-mini"):
     t = "lds" if args.lake_district else "testimonies"
@@ -961,6 +798,8 @@ def get_joint_graph(d, conversion_d):
 
     """
     loc_to_type = {n[0]: n[1]["type"] for _d in d.values() for n in _d["graph"]["nodes"]}
+    if args.gis:
+        loc_to_coords = {n[0]: n[2]["coords"] for _d in d.values() for n in _d["graph"]["nodes"]}
     print("\nlocations:")
     l = list(loc_to_type.keys())
     l.sort()
@@ -982,17 +821,17 @@ def get_joint_graph(d, conversion_d):
             return True
         return False
 
-    new_graphs = {i: {"nodes": [n if n[0] not in conversion_d else [conversion_d[n[0]], {"type": loc_to_type[n[0]]}]
+    new_graphs = {i: {"nodes": [n if n[0] not in conversion_d else [conversion_d[n[0]], {"type": loc_to_type[n[0]]}, {"coords":loc_to_coords[n[0]]}] if args.gis else [conversion_d[n[0]], {"type": loc_to_type[n[0]]}]
                                 for n in _d["graph"]["nodes"]],
                       "edges": [[conversion_d.get(e[0], e[0]), conversion_d.get(e[1], e[1])]
                                 for e in _d["graph"]["edges"] if (len(e) == 2 and not impossible_edge(e[0], e[1]))]} for i, _d in d.items()}
     print("new graphs:")
     print(new_graphs)
-    all_nodes = set([(n[0], n[1]["type"]) for g in new_graphs.values() for n in g["nodes"]])
+    all_nodes = set([(n[0], n[1]["type"], n[2]["coords"]) if args.gis else (n[0], n[1]["type"]) for g in new_graphs.values() for n in g["nodes"]])
     # all_nodes = set([(n[0], n[1]["type"]) for g in d.values() for n in g["graph"]["nodes"]])
     node_set = set([n[0] for g in new_graphs.values() for n in g["nodes"]])
     # node_set = set([n[0] for g in d.values() for n in g["graph"]["nodes"]])
-    all_nodes = [(n[0], {"type": n[1]}) for n in all_nodes]
+    all_nodes = [(n[0], {"type": n[1], "coords": n[2]}) if args.gis else (n[0], {"type": n[1]})  for n in all_nodes]
     all_edges = set([tuple(e) for g in new_graphs.values() for e in g["edges"]])
     # all_edges = set([tuple(e) for g in d.values() for e in g["graph"]["edges"]])
     all_edges = [(e[0], e[1]) for e in all_edges if len(set(e) - node_set) == 0]
@@ -1011,6 +850,8 @@ def get_joint_graph(d, conversion_d):
     G = nx.read_adjlist(args.base_path + f"{OUTPUT_TYPE}/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
     # add node_types to G
     nx.set_node_attributes(G, {n[0]: n[1]["type"] for n in all_nodes}, "type")
+    if args.gis:
+        nx.set_node_attributes(G, {n[0]: n[1]["coords"] for n in all_nodes}, "coords")
 
     return G
 
@@ -1111,6 +952,7 @@ def main():
         # G = get_joint_graph(d, conversion_d)
 
         if args.evaluate:
+            from evaluation import get_gold_xlsx, evaluate
             gold_d = get_gold_xlsx()
             for i, _d in d.items():
                 path_d = _d["path"]
@@ -1136,12 +978,26 @@ def main():
     print("\nConversion dict")
     print(conversion_d)
 
+    if args.lake_district:
+        from lake_district import name_conversion, get_gis
+        name_conversion = name_conversion()
+        gis_dict = get_gis()
+        for n, _d in d.items():
+            nn = name_conversion[n + ".xml"]
+            for i, p in enumerate(_d["graph"]["nodes"]):
+                _d["graph"]["nodes"][i] = [p[0], p[1], {"coords": gis_dict[nn].get(p[0], None)}]
+
     G = get_joint_graph(d, conversion_d)
     # path_lens = []
     # for i, _d in d.items():
     #     path_d = _d["path"]['nodes']
     #     path_lens.append(len(path_d))
     # print("Path lens: ", path_lens)
+
+    if args.gis:
+        from evaluation import test_gis
+        test_gis(G)
+
     plot_paths(d, G, testimony_ids, conversion_d)
 
     # the median path length in d
