@@ -219,34 +219,37 @@ def make_tree(G, random_tree=False):
 
     for node, data in G.nodes(data=True):
         if data["type"] == "Country":
-            countries.append(node)
+            countries.append([node, data])
         elif data["type"] == "City":
-            cities.append(node)
+            cities.append([node, data])
         elif data["type"] == "Natural":
-            naturals.append(node)
+            naturals.append([node, data])
         elif data["type"] == "Facility":
-            facilities.append(node)
+            facilities.append([node, data])
 
 
     if not random_tree:
         from geopy.distance import geodesic
         # make edges from each city to each country. Each edge will have weight 1
-        city2country = [(city, country, 1.) for city in cities for country in countries]
+        city2country = [(city[0], country[0], 1.) for city in cities for country in countries]
         # natural2city = [(natural, city, 1.) for natural in naturals for city in cities]
-        natural2city = [(natural, city, geodesic(natural["coords"], city["coords"]).kilometers) for natural in naturals for city in cities]
-        facility2city = [(facility, city, geodesic(facility["coords"], city["coords"]).kilometers) for facility in facilities for city in cities]
+        natural2city = [(natural[0], city[0], geodesic(natural[1]["coords"], city[1]["coords"]).kilometers) for natural in naturals for city in cities]
+        facility2city = [(facility[0], city[0], geodesic(facility[1]["coords"], city[1]["coords"]).kilometers) for facility in facilities for city in cities]
         DG.add_weighted_edges_from(city2country)
         DG.add_weighted_edges_from(natural2city)
         DG.add_weighted_edges_from(facility2city)
 
         # find the minimal spanning tree
-        T = nx.minimum_spanning_tree(DG)
+        T = nx.minimum_spanning_tree(DG.to_undirected()).to_directed()
+        # remove all edges from city to natural, from city to facility and from country to city
+
+
         return T
     else:
         # choose one country for each city
-        city2country = [(city, random.choice(countries)) for city in cities]
+        city2country = [(city[0], random.choice(countries)[0]) for city in cities]
         # choose one city for each natural
-        natural2city = [(natural, random.choice(cities)) for natural in naturals]
+        natural2city = [(natural[0], random.choice(cities)[0]) for natural in naturals]
 
         DG.add_edges_from(city2country)
         DG.add_edges_from(natural2city)

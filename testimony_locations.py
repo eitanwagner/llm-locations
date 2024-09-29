@@ -996,6 +996,10 @@ def main():
 
     if args.gis:
         from evaluation import test_gis
+        nodes_to_remove = [n for n in G.nodes if G.nodes[n]["coords"] is None and n != "England"]
+        print("Nodes to remove:")
+        print(nodes_to_remove)
+        G.remove_nodes_from(nodes_to_remove)
         test_gis(G)
 
     plot_paths(d, G, testimony_ids, conversion_d)
