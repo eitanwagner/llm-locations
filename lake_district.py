@@ -6,7 +6,8 @@ import pandas as pd
 
 def load_ld(path):
     # Parse the XML file and get the root element
-    tree = ET.parse(path + "LD80_transcribed/")
+    # tree = ET.parse(path + "LD80_transcribed/")
+    tree = ET.parse(path)
     root = tree.getroot()
 
     # Extract all text within the root element
@@ -56,12 +57,13 @@ def name_conversion(path="/cs/labs/oabend/eitan.wagner/LakeDistrictCorpus/"):
 if __name__ == "__main__":
 
     path = "/cs/labs/oabend/eitan.wagner/LakeDistrictCorpus/"
-    gis = get_gis(path)
+    # ld = load_ld(path)
+    # gis = get_gis(path)
 
-    # path = "/cs/labs/oabend/eitan.wagner/LakeDistrictCorpus/LD80_transcribed/"
-    # files = get_file_list(path)
-    # d = {file[:-4]: load_ld(os.path.join(path, file)).strip().replace("\n\n\n\n", "\n\n") for file in files}
-    # # print(d)
-    # with open("/cs/labs/oabend/eitan.wagner/LakeDistrictCorpus/lake_district.json", "w") as f:
-    #     json.dump(d, f)
+    path = "/cs/labs/oabend/eitan.wagner/LakeDistrictCorpus/LD80_transcribed/"
+    files = get_file_list(path)
+    d = {file[:-4]: load_ld(os.path.join(path, file)).strip().replace("\n\n\n\n", "\n\n") for file in files}
+    # print(d)
+    with open("/cs/labs/oabend/eitan.wagner/LakeDistrictCorpus/lake_district.json", "w") as f:
+        json.dump(d, f)
 

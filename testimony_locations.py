@@ -11,6 +11,10 @@ import sys
 # from torch.cuda import graph
 
 import argparse
+
+import tqdm
+from django.contrib.messages.context_processors import messages
+
 from utils import parse_args
 args = parse_args()
 OUTPUT_TYPE = "testimonies" if not args.lake_district else "lds"
@@ -19,12 +23,19 @@ def exponential_backoff(client, messages, model='gpt-4-turbo-preview', max_retri
     retries = 0
     while retries < max_retries:
         try:
-            completion = client.chat.completions.create(
-                model=model,
-                messages=messages,
-                response_format={"type": "json_object"},
-                max_tokens=1024
-            )
+            if "o1" not in model:
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                    max_tokens=1024,
+                )
+            else:
+                completion = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_completion_tokens=65000
+                )
             return completion
         except Exception as e:
             print(f"Request failed: {str(e)}")
@@ -34,6 +45,10 @@ def exponential_backoff(client, messages, model='gpt-4-turbo-preview', max_retri
             retries += 1
 
     raise Exception(f"Request failed even after retries. id: {id}")
+
+def llama_request(pipe, messages):
+    return pipe(messages, max_new_tokens=1500, pad_token_id=pipe.tokenizer.eos_token_id, temperature=1.,
+                do_sample=True)[0]['generated_text']
 
 
 # ***********************************
@@ -48,9 +63,13 @@ def get_graphs_gpt4(i=43019, print_output=False, model="gpt-4o", save=True, revi
     :param revise:
     :return:
     """
-    # from openai import OpenAI
-    from openai_client import get_client
-    client = get_client()
+    if "gpt" in model or "o1" in model:
+        from openai_client import get_client
+        client = get_client()
+    else:
+        from openai_client import get_llama_client
+        client = get_llama_client(model_name=args.model)
+
     testimony_text = make_numbered(i)
     # Set up OpenAI API credentials
 
@@ -65,7 +84,8 @@ def get_graphs_gpt4(i=43019, print_output=False, model="gpt-4o", save=True, revi
     3. Keep the graph as full as possible,  so, for example, if a place in a city in country is mentioned, there should be nodes for the place, the city, and the country. Separate a district from a city description into two nodes.
     4. The graph should include relations between locations (i.e., A is in B).  Make sure that the direction of an edge is that of inclusion if relevant (that is, if A is in B then the edge should be from A to B).
     5. Make sure to avoid double entries.
-    6. Give me the graph as JSON dictionary, with a the "nodes" field indicating a list of nodes  and "edges" indicating a list of edges. These nodes and edges should be in a format that can be create a python networkx graph. Make sure the nodes are given as a list of tuples, in which the first value is the name and the second is a dictionary with the type (as described above) The edges should be in a list of tuples, each containing two names (see example).
+    6. Give me the graph as JSON dictionary, with a the "nodes" field indicating a list of nodes  and "edges" indicating a list of edges. These nodes and edges should be in a format that can be create a python networkx graph. 
+    Make sure the nodes are given as a list of tuples, in which the first value is the name and the second is a dictionary with the type (as described above) The edges should be in a list of tuples, each containing two names (see example). Make sure the output is a valid JSON (e.g., correct brackets).
     
     Here is an example (from a different testimony):
     ```json
@@ -133,18 +153,42 @@ def get_graphs_gpt4(i=43019, print_output=False, model="gpt-4o", save=True, revi
     Give your (possibly) corrected answer in the same JSON format.
     """
 
-    messages = [{"role": "system", "content": "You are a helpful assistant."}]
+    if "o1" not in model:
+        messages = [{"role": "system", "content": "You are a helpful assistant."}]
+    else:
+        revise = False
+        messages = []
     messages.append({"role": "user", "content": prompt + testimony_text})
-    completion = exponential_backoff(client, messages, id=i, model=model)
-    if revise:
-        messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
-        messages.append({"role": "user", "content": m3a})
+    if "gpt" in model or "o1" in model:
         completion = exponential_backoff(client, messages, id=i, model=model)
+        if revise:
+            messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+            messages.append({"role": "user", "content": m3a})
+            completion = exponential_backoff(client, messages, id=i, model=model)
+        messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+        # try:
+        #     d = json.loads(completion.choices[0].message.content)
+        # except Exception as e:
+        #     print(f"JSON parsing failed: {str(e)}")
+        #     return {"nodes": [], "edges": []}, {"nodes": [], "edges": []}
+    else:
+        completion = llama_request(pipe=client, messages=messages)[-1]
+        messages.append(completion)
+        if revise:
+            messages.append({"role": "user", "content": m3a})
+            completion = llama_request(pipe=client, messages=messages)[-1]
+            messages.append(completion)
 
+    json_content = messages[-1]["content"]
+    if "gpt" not in model:
+        json_content = "\n".join([l.split("//")[0].split(" # ")[0] for l in json_content.splitlines()])
+        json_content = "{" + json_content.split("{", 1)[1].rsplit("}", 1)[0].replace("0.,", "0.0") + "}"
     try:
-        d = json.loads(completion.choices[0].message.content)
+        d = json.loads(json_content)
     except Exception as e:
         print(f"JSON parsing failed: {str(e)}")
+        print(messages[-1]["content"])
+        sys.stdout.flush()
         return {"nodes": [], "edges": []}, {"nodes": [], "edges": []}
 
     # get path
@@ -153,7 +197,7 @@ def get_graphs_gpt4(i=43019, print_output=False, model="gpt-4o", save=True, revi
     All location nodes should be nodes from the networkx graph you gave before. The nodes should have a field noting the sentence number in the text in which the witness was in that location.
     The edges should be between each adjacent node by order of the testimony.  Make sure that the sentence number is sorted in ascending order.
     For each edge, add the method of transportation can be inferred from the text. Methods include: By foot, By car, By train, By plane. If the method is unknown give Unknown.
-    Give me a graph in JSON format (like in the example).
+    Give me a graph in JSON format (like in the example). The response should be a valid JSON only, without comments or additional text.
     
     For example:
     ```json
@@ -168,22 +212,42 @@ def get_graphs_gpt4(i=43019, print_output=False, model="gpt-4o", save=True, revi
     }
     ```
     """
-    messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+    # messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
     messages.append({"role": "user", "content": m2})
-    completion = exponential_backoff(client, messages, id=i, model=model)
-
-    if revise:
-        messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
-        messages.append({"role": "user", "content": m3b})
+    if "gpt" in model or "o1" in model:
         completion = exponential_backoff(client, messages, id=i, model=model)
 
+        if revise:
+            messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+            messages.append({"role": "user", "content": m3b})
+            completion = exponential_backoff(client, messages, id=i, model=model)
+        messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+
+        # try:
+        #     d2 = json.loads(completion.choices[0].message.content)
+        # except Exception as e:
+        #     print(f"JSON parsing failed: {str(e)}")
+        #     return d, {"nodes": [], "edges": []}
+        # # d2 = json.loads(completion.choices[0].message.content)
+        # messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+    else:
+        completion = llama_request(pipe=client, messages=messages)[-1]
+        messages.append(completion)
+        if revise:
+            messages.append({"role": "user", "content": m3b})
+            completion = llama_request(pipe=client, messages=messages)[-1]
+            messages.append(completion)
+
+    json_content = messages[-1]["content"]
+    if "gpt" not in model:
+        json_content = "\n".join([l.split("//")[0].split(" # ")[0] for l in json_content.splitlines()])
+        json_content = "{" + json_content.split("{", 1)[1].rsplit("}", 1)[0].replace("0.,", "0.0") + "}"
     try:
-        d2 = json.loads(completion.choices[0].message.content)
+        d2 = json.loads(json_content)
     except Exception as e:
         print(f"JSON parsing failed: {str(e)}")
-        return d, {"nodes": [], "edges": []}
-    # d2 = json.loads(completion.choices[0].message.content)
-    messages.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+        return {"nodes": [], "edges": []}, {"nodes": [], "edges": []}
+
     if print_output:
         print(messages)
 
@@ -193,10 +257,10 @@ def get_graphs_gpt4(i=43019, print_output=False, model="gpt-4o", save=True, revi
         with open(args.base_path + f"{OUTPUT_TYPE}/singles/path_{i}_{model}.json", 'w') as file:
             json.dump(d2, file)
         # update created_ids
-        with open(args.base_path + f"created_ids{'_e' if args.evaluate else ''}_{model}.json", 'r') as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/created_ids{'_e' if args.evaluate else ''}_{model}.json", 'r') as file:
             created_ids = json.load(file)
         created_ids.append(i)
-        with open(args.base_path + f"created_ids{'_e' if args.evaluate else ''}_{model}.json", 'w') as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/created_ids{'_e' if args.evaluate else ''}_{model}.json", 'w') as file:
             json.dump(created_ids, file)
     return d, d2
 
@@ -602,24 +666,32 @@ def plot_ld_path(G, G_paths=None, i=""):
         path_nodes = [n for Gp in G_paths.values() for n in Gp.nodes]
 
     for G_path in [G_paths[i]]:
-        plt.figure(figsize=(16, 16))
+        plt.figure(figsize=(15, 15))
         # pos = nx.spring_layout(G, k=0.1, seed=42)
 
         # pos = nx.nx_pydot.graphviz_layout(G, prog="twopi")
         types = list(nx.get_node_attributes(G, "type").values())
-        size2type = {300: ["Country"],
-                     200: ['County'],
-                     100: ['City'],
-                     30: ["Facility"],
-                     30: ['Lake', 'River', "Natural"]
+        size2type = {700: ["Country"],
+                     500: ['County', "Region"],
+                     100: ['City', "Village", "Town", "Area", "Common"],
+                     30: ["Facility", 'Lake', 'River', "Natural"],
                      }
         node_labels = list(G.nodes)
         type2size = {t: s for s, ts in size2type.items() for t in ts}
-        type2color = {t: "green" if t in ['Lake', 'River', "Natural"] else "brown" if t in ["Country"] else "orange" if t in ["Facility"] else "blue" for t in types}
+        type2color = {t: "green" if t in ['Lake', 'River', "Natural"] else "brown" if t in ["Country", "County", "Region"] else "orange" if t in ["Facility"] else "blue" for t in types}
 
         random.seed(42)
         _G = G.copy()
-        _G.remove_nodes_from([n for n, t in zip(_G.nodes, types) if t in size2type[300] and n not in path_nodes])
+        # remove all nodes belonging to scotland
+        # _G.remove_nodes_from([n for n in _G.nodes if "Scotland" in nx.descendants(_G, n)])
+
+        _G.remove_nodes_from([n for n, t in zip(_G.nodes, types) if t in size2type[700] and n not in path_nodes])
+
+        r = np.random.rand(len(_G.nodes))
+        _G.remove_nodes_from([n for _i, (n, t) in enumerate(zip(_G.nodes, types)) if t in size2type[500] + size2type[100] + size2type[30] and r[_i] < 0.5 and n not in path_nodes])
+
+        # remove all isolated nodes
+        _G.remove_nodes_from([n for n in nx.isolates(_G) if n not in path_nodes])
 
         # # remove 60 percent the nodes of size 50 and 15
         # # set numpy random seed
@@ -631,12 +703,13 @@ def plot_ld_path(G, G_paths=None, i=""):
         _G.remove_nodes_from([n for n in nx.isolates(_G) if n not in path_nodes])
 
         types = list(nx.get_node_attributes(_G, "type").values())
+        node_labels = list(_G.nodes)
         H = nx.convert_node_labels_to_integers(_G, label_attribute="node_label")
         # H_layout = nx.nx_agraph.pygraphviz_layout(H, prog="twopi", args='-Granksep=2 -Gnormalize=0 -Gstart=42')
         H_layout = nx.nx_pydot.graphviz_layout(H, prog="twopi")
         pos = {H.nodes[n]["node_label"]: p for n, p in H_layout.items()}
 
-        shape_list = ["o" if t in ["Country", "County"] else "s" if t in ['City'] else "^" if t in ['Lake', 'River', "Natural"] else "d" for t in types]
+        shape_list = ["o" if t in ["Country", "County", "Region"] else "s" if t in ['City'] else "^" if t in ['Lake', 'River', "Natural"] else "d" for t in types]
 
         # size_list = [type2size.get(t, 5) * 15 for t in types]
         size_list = [type2size.get(t, 5) * 10 for t in types]
@@ -659,6 +732,7 @@ def plot_ld_path(G, G_paths=None, i=""):
 
             # for _i, (node, (x, y)) in enumerate(pos.items()):
             plt.text(x, y, n, fontsize=fontsize_list[_i], ha='center', va='center')
+            print(n, size_list[_i], color_list[_i], types[_i])
 
         nx.draw_networkx_edges(_G, pos, edge_color="gray", width=2, arrows=True, alpha=0.6)
 
@@ -682,7 +756,7 @@ def plot_ld_path(G, G_paths=None, i=""):
                      # + np.arange(len(G_path.edges)))
             # Draw the edges with the specified colors or sizes
             for _i, (edge, size) in enumerate(zip(path_edges, sizes)):
-                nx.draw_networkx_edges(_G, pos, edgelist=[edge], edge_color=cmap(norm(_i)), width=size, arrows=True, arrowsize=100)
+                nx.draw_networkx_edges(_G, pos, edgelist=[edge], edge_color=cmap(norm(_i)), width=size, arrows=True, arrowsize=50)
 
             e_labels = {e: i+1 for i, e in enumerate(path_edges)}
             nx.draw_networkx_edge_labels(_G, pos, edge_labels=e_labels)
@@ -722,6 +796,7 @@ def get_graphs(testimony_ids, model="gpt-4o-mini", load=True):
     :param testimony_ids:
     """
     if load:
+        # with open(args.base_path + f"{OUTPUT_TYPE}/graphs{'_e' if args.evaluate else ''}_{model}-full.json", "r") as file:
         with open(args.base_path + f"{OUTPUT_TYPE}/graphs{'_e' if args.evaluate else ''}_{model}.json", "r") as file:
             d = json.load(file)
         return d
@@ -732,6 +807,7 @@ def get_graphs(testimony_ids, model="gpt-4o-mini", load=True):
     test_ids = []
     ignore = created_ids
     if not args.lake_district:
+        from evaluation import get_gold_xlsx
         test_d = get_gold_xlsx()
         test_ids = list(test_d.keys())
         ignore = ['45064', '29550'] + ignore
@@ -744,13 +820,17 @@ def get_graphs(testimony_ids, model="gpt-4o-mini", load=True):
     print("Slice:")
     print(s)
     if args.set == "test":
+        # test_ids = ["38081", "37179", "24529", "36134", "21609", "27080", "29708", "33525", "21723", "19939"]
+        test_ids = ["38081", "37179", "24529", "36134", "21609", "27080", "33525", "21723", "19939"]  # took off 29708 as it was too long
+        # test_ids = ["38081", "37179", "24529"]  # took off 29708 as it was too long
         ids = [t for t in test_ids[s] if t not in ignore]
     else:
         ids = [t for t in nontest_ids[s] if t not in ignore]
     # ids = [t for t in testimony_ids[s] if t not in ignore]
     # ids = ['31487']
-    for i in ids:
+    for i in tqdm.tqdm(ids):
         print(i)
+        sys.stdout.flush()
         if args.lake_district:
             graph_d, path_d = get_ld_graphs_gpt4(i=i, print_output=True, model=model)
         else:
@@ -772,7 +852,7 @@ def get_conversion_d(d, load=False, model="gpt-4o", save=True):
     :return:
     """
     if load:
-        with open(args.base_path + f"{OUTPUT_TYPE}/duplicates{'_e' if args.evaluate else ''}_{args.model}.json", "r") as file:
+        with open(args.base_path + f"{OUTPUT_TYPE}/duplicates{'_e' if args.evaluate else ''}_{args.model}-full.json", "r") as file:
             conversion_d = json.load(file)
         return conversion_d
 
@@ -813,9 +893,13 @@ def get_joint_graph(d, conversion_d):
         type2 = loc_to_type.get(n2, "")
         if type1 == type2:
             return True
-        if type1 == "City" and type2 == "Village":
+        if type1 in ["City", "Village", "County", "Town", "Area", "Common"] and type2 in ["City", "Village", "Town", "Area", "Common"]:
             return True
-        if type1 == "Country" and type2 == "City":
+        # if type1 == "City" and type2 == "Village":
+        #     return True
+        if type1 in ["Country", "Continent", "County", "City", "Village", "County", "Town", "Area", "Common"] and type2 in ["Natural", "Facility"]:
+            return True
+        if type1 == "Country" and type2 in ["City", "Country"]:
             return True
         if type1 == "Continent" and type2 == "Country":
             return True
@@ -847,7 +931,7 @@ def get_joint_graph(d, conversion_d):
     with open(args.base_path + f"{OUTPUT_TYPE}/nodes{'_e' if args.evaluate else ''}{args.model}.json", 'w') as file:
         json.dump(all_nodes, file)
     nx.write_adjlist(G, args.base_path + f"{OUTPUT_TYPE}/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
-    G = nx.read_adjlist(args.base_path + f"{OUTPUT_TYPE}/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*')
+    G = nx.read_adjlist(args.base_path + f"{OUTPUT_TYPE}/graph_{'_e' if args.evaluate else ''}{args.model}.adjlist", delimiter='*', create_using=nx.DiGraph)
     # add node_types to G
     nx.set_node_attributes(G, {n[0]: n[1]["type"] for n in all_nodes}, "type")
     if args.gis:
@@ -866,7 +950,7 @@ def plot_paths(d, G, testimony_ids, conversion_d):
     """
     G_paths = {}
     ids = []
-    for id in testimony_ids[:5]:
+    for id in testimony_ids[:1]:
         # if id == "32783":
         #     continue
         if id in d:
@@ -930,6 +1014,49 @@ def find_pairs(d):
     return pairs
 
 
+def remove_nodes_and_bypass(G, nodes_to_remove):
+    for node in nodes_to_remove:
+        predecessors = list(G.predecessors(node))
+        successors = list(G.successors(node))
+
+        # Add new edges from each predecessor to each successor
+        for pred in predecessors:
+            for succ in successors:
+                if pred != succ:  # Avoid self-loops
+                    G.add_edge(pred, succ)
+
+        # Remove the node
+        G.remove_node(node)
+
+def connect_naturals_to_city(G):
+    cities = []
+    naturals = []
+
+    for node, data in G.nodes(data=True):
+        if data["type"] in ["City", "Village", "Town", "Area", "Common"]:
+            cities.append(node)
+        elif data["type"] in ["Natural", "Facility"]:
+            naturals.append(node)
+
+    # for each edge between a natural and a city, connect all ascendants of the natural to the city
+    for natural in naturals:
+        for city in cities:
+            if G.has_edge(natural, city):
+                for ascendant in nx.ancestors(G, natural):
+                    G.add_edge(ascendant, city)
+
+    # remove all edges from natural to natural
+    for natural in naturals:
+        for natural2 in naturals:
+            if G.has_edge(natural, natural2):
+                G.remove_edge(natural, natural2)
+
+    for c in cities:
+        for c2 in cities:
+            if G.has_edge(c, c2):
+                G.remove_edge(c, c2)
+
+    return G
 # ***********************************
 
 def main():
@@ -946,21 +1073,42 @@ def main():
         testimony_ids = list(json.load(infile).keys())
 
     if args.evaluate or args.n >= 0:
-        d = get_graphs(testimony_ids, model=model, load=False)
-        # d = get_graphs(testimony_ids, model=model, load=True)
+        # d = get_graphs(testimony_ids, model=model, load=False)
+        d = get_graphs(testimony_ids, model=model, load=True)
         # conversion_d = get_conversion_d(d, load=False, model=model, save=True)
         # G = get_joint_graph(d, conversion_d)
+
+        ids = ["38081", "37179", "24529", "21723", "19939"]
+
+        print("\nModel:", model)
+        print("Number of testimonies:", len([len(_d["path"]["nodes"]) for k, _d in d.items() if k in ids]))
+        avg_len = np.mean([len(_d["path"]["nodes"]) for k, _d in d.items() if k in ids])
+        print("trajectory average length:", avg_len)
+        len_std = np.std([len(_d["path"]["nodes"]) for k, _d in d.items() if k in ids])
+        print("trajectory length std:", len_std)
 
         if args.evaluate:
             from evaluation import get_gold_xlsx, evaluate
             gold_d = get_gold_xlsx()
+            len_dict = {}
             for i, _d in d.items():
+                if i not in ["38081", "37179", "24529", "21723", "19939"]:
+                # if i not in ["38081", "37179"]:
+                    continue
                 path_d = _d["path"]
                 gold_path = gold_d[i][1]
                 # remove repeating locations in gold path. remove only if they are consecutive
                 gold_path = [gold_path[i] for i in range(1, len(gold_path)-1) if gold_path[i] != gold_path[i-1]]  # and remove start and end
+                len_dict[i] = len(gold_path)
 
-                evaluate(path_d, gold_path, d, i)
+                # evaluate(path_d, gold_path, d, i)
+
+            print("\nGold (from SF)")
+            print("Number of testimonies:", len([k for k in len_dict.keys() if k in ids]))
+            avg_len = np.mean([v for k, v in len_dict.items() if k in ids])
+            print("trajectory average length:", avg_len)
+            len_std = np.std([v for k, v in len_dict.items() if k in ids])
+            print("trajectory length std:", len_std)
         return
 
     d = get_graphs(testimony_ids, model=model, load=True)
@@ -970,7 +1118,7 @@ def main():
         p = find_pairs(d)
 
         # take pairs and triples that appear more than once
-        m_pairs = {k: v for k, v in p.items() if len(v) > 8}
+        m_pairs = {k: v for k, v in p.items() if len(v) > 4}
         m_triples = {k: v for k, v in t.items() if len(v) > 1}
 
     # conversion_d = get_conversion_d(d, load=False, model=model, save=True)
@@ -996,11 +1144,30 @@ def main():
 
     if args.gis:
         from evaluation import test_gis
-        nodes_to_remove = [n for n in G.nodes if G.nodes[n]["coords"] is None and n != "England"]
+        nodes_to_remove = [n for n in G.nodes if G.nodes[n]["coords"] is None and n not in ["England", "Scotland"]]
         print("Nodes to remove:")
         print(nodes_to_remove)
-        G.remove_nodes_from(nodes_to_remove)
-        test_gis(G)
+        # create a copy of G
+        _G = G.copy()
+        # add edge from Cumberland to England
+        _G.add_edge("Cumberland", "England")
+        _G.add_edge("Lancashire", "England")
+        _G.add_edge("Cheshire", "England")
+        _G.add_edge('Northumberland', "England")
+
+        connect_naturals_to_city(_G)
+        remove_nodes_and_bypass(_G, nodes_to_remove)
+        # _G.remove_nodes_from(nodes_to_remove)
+
+        # print isolated nodes
+        print("Isolated nodes:")
+        print([n for n in nx.isolates(_G)])
+        for n in nx.isolates(_G):
+            # print adjacent nodes to n
+            print(n, [_n for _n in G.neighbors(n) if _n in nodes_to_remove])
+
+        test_gis(_G)
+        return
 
     plot_paths(d, G, testimony_ids, conversion_d)
 
